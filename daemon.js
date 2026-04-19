@@ -144,6 +144,28 @@ async function stop_remote() {
 
 const isRealPage = (t) => t.type === 'page' && !INTERNAL.some((p) => (t.url || '').startsWith(p));
 
+// Defence-in-depth path guard for CDP calls that read from the filesystem
+// (DOM.setFileInputFiles). helpers.js runs the same check, but an agent that
+// rewrites helpers.js can bypass that -- the daemon is the trusted layer.
+function _realpath(p) {
+  try { return fs.realpathSync(p); } catch { return p; }
+}
+const ALLOWED_PATHS = (process.env.BU_ALLOWED_PATHS || `/tmp:${process.cwd()}`)
+  .split(':').filter(Boolean).map((p) => _realpath(path.resolve(p)));
+function _check_path(p) {
+  const abs = path.resolve(p);
+  let real;
+  try { real = fs.realpathSync(abs); }
+  catch (e) {
+    if (e.code !== 'ENOENT') throw e;
+    throw new Error(`path does not exist: ${abs}`);
+  }
+  for (const pre of ALLOWED_PATHS) {
+    if (real === pre || real.startsWith(pre + path.sep)) return real;
+  }
+  throw new Error(`path outside BU_ALLOWED_PATHS (${ALLOWED_PATHS.join(':')}): ${real}`);
+}
+
 class CDPClient extends EventEmitter {
   constructor(url) {
     super();
@@ -267,6 +289,10 @@ class Daemon {
 
     const method = req.method;
     const params = req.params || {};
+    if (method === 'DOM.setFileInputFiles') {
+      try { for (const f of params.files || []) _check_path(f); }
+      catch (e) { return { error: e.message }; }
+    }
     // Browser-level Target.* calls must not use a session (stale or otherwise).
     // For everything else, explicit session in req wins; else default.
     const sid = method.startsWith('Target.') ? null : (req.session_id || this.session);

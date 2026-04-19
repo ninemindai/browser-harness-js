@@ -28,14 +28,41 @@ const INTERNAL = ['chrome://', 'chrome-untrusted://', 'devtools://', 'chrome-ext
 // Filesystem allowlist for upload_file / screenshot. Overridable via BU_ALLOWED_PATHS
 // (colon-separated absolute prefixes). Guards a prompt-injected agent from
 // reaching ~/.ssh, ~/.aws, etc. See SECURITY.md §3.1.
+//
+// Allowlist entries are realpath'd so /tmp (a symlink to /private/tmp on macOS)
+// matches canonicalised paths.
+function _realpath(p) {
+  try { return fs.realpathSync(p); } catch { return p; }
+}
 const ALLOWED_PATHS = (process.env.BU_ALLOWED_PATHS || `/tmp:${process.cwd()}`)
-  .split(':').filter(Boolean).map((p) => path.resolve(p));
+  .split(':').filter(Boolean).map((p) => _realpath(path.resolve(p)));
+// Resolve symlinks in `p` so a symlink under an allowed prefix pointing at, say,
+// ~/.ssh/id_ed25519 does NOT sneak through. For not-yet-existent targets
+// (e.g. screenshot destinations) realpath the closest existing ancestor.
 function _check_path(p) {
   const abs = path.resolve(p);
-  for (const pre of ALLOWED_PATHS) {
-    if (abs === pre || abs.startsWith(pre + path.sep)) return abs;
+  let real;
+  try {
+    real = fs.realpathSync(abs);
+  } catch (e) {
+    if (e.code !== 'ENOENT') throw e;
+    let dir = path.dirname(abs);
+    const tail = [path.basename(abs)];
+    while (true) {
+      try { real = path.join(fs.realpathSync(dir), ...tail); break; }
+      catch (err) {
+        if (err.code !== 'ENOENT') throw err;
+        const parent = path.dirname(dir);
+        if (parent === dir) throw err;
+        tail.unshift(path.basename(dir));
+        dir = parent;
+      }
+    }
   }
-  throw new Error(`path outside BU_ALLOWED_PATHS (${ALLOWED_PATHS.join(':')}): ${abs}`);
+  for (const pre of ALLOWED_PATHS) {
+    if (real === pre || real.startsWith(pre + path.sep)) return real;
+  }
+  throw new Error(`path outside BU_ALLOWED_PATHS (${ALLOWED_PATHS.join(':')}): ${real}`);
 }
 
 function _send(req) {

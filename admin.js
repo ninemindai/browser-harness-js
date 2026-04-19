@@ -49,7 +49,15 @@ function daemon_alive(name) {
 // Idempotent. `env` is merged into the child process env.
 async function ensure_daemon({ wait = 60.0, name, env } = {}) {
   if (await daemon_alive(name)) return;
-  const e = { ...process.env, ...(name ? { BU_NAME: name } : {}), ...(env || {}) };
+  // Freeze the default allowlist against the caller's cwd; otherwise the daemon
+  // (spawned with cwd=__dirname) would allow the repo dir, not the user's cwd.
+  const defaultAllowed = process.env.BU_ALLOWED_PATHS || `/tmp:${process.cwd()}`;
+  const e = {
+    ...process.env,
+    BU_ALLOWED_PATHS: defaultAllowed,
+    ...(name ? { BU_NAME: name } : {}),
+    ...(env || {}),
+  };
   const child = spawn(process.execPath, ['daemon.js'], {
     cwd: __dirname,
     env: e,
