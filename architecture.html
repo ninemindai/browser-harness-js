@@ -1,0 +1,514 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Browser Harness (JS) Architecture</title>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: 'JetBrains Mono', monospace;
+      background: #020617;
+      min-height: 100vh;
+      padding: 2rem;
+      color: white;
+    }
+
+    .container { max-width: 1260px; margin: 0 auto; }
+
+    .header { margin-bottom: 2rem; }
+
+    .header-row {
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+      margin-bottom: 0.5rem;
+    }
+
+    .pulse-dot {
+      width: 12px;
+      height: 12px;
+      background: #22d3ee;
+      border-radius: 50%;
+      animation: pulse 2s infinite;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.5; }
+    }
+
+    h1 {
+      font-size: 1.5rem;
+      font-weight: 700;
+      letter-spacing: -0.025em;
+    }
+
+    .subtitle {
+      color: #94a3b8;
+      font-size: 0.875rem;
+      margin-left: 1.75rem;
+    }
+
+    .diagram-container {
+      background: rgba(15, 23, 42, 0.5);
+      border-radius: 1rem;
+      border: 1px solid #1e293b;
+      padding: 1.5rem;
+      overflow-x: auto;
+    }
+
+    svg {
+      width: 100%;
+      min-width: 1040px;
+      display: block;
+    }
+
+    .cards {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 1rem;
+      margin-top: 2rem;
+    }
+
+    .card {
+      background: rgba(15, 23, 42, 0.5);
+      border-radius: 0.75rem;
+      border: 1px solid #1e293b;
+      padding: 1.25rem;
+    }
+
+    .card-header {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      margin-bottom: 0.75rem;
+    }
+
+    .card-dot { width: 8px; height: 8px; border-radius: 50%; }
+    .card-dot.cyan { background: #22d3ee; }
+    .card-dot.emerald { background: #34d399; }
+    .card-dot.violet { background: #a78bfa; }
+    .card-dot.amber { background: #fbbf24; }
+    .card-dot.rose { background: #fb7185; }
+    .card-dot.slate { background: #94a3b8; }
+
+    .card h3 { font-size: 0.875rem; font-weight: 600; }
+    .card ul { list-style: none; color: #94a3b8; font-size: 0.75rem; }
+    .card li { margin-bottom: 0.375rem; }
+    .card code {
+      background: rgba(30,41,59,0.8);
+      padding: 0 4px;
+      border-radius: 3px;
+      font-size: 0.7rem;
+    }
+
+    .footer {
+      text-align: center;
+      margin-top: 1.5rem;
+      color: #475569;
+      font-size: 0.75rem;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <!-- Header -->
+    <div class="header">
+      <div class="header-row">
+        <div class="pulse-dot"></div>
+        <h1>Browser Harness (JS) Architecture</h1>
+      </div>
+      <p class="subtitle">Agent runtime + daemon are always local. Only Chrome itself may be remote (cloud-hosted, driven over wss://).</p>
+    </div>
+
+    <!-- Main Diagram -->
+    <div class="diagram-container">
+      <svg viewBox="0 0 1200 880">
+        <defs>
+          <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+            <polygon points="0 0, 10 3.5, 0 7" fill="#64748b" />
+          </marker>
+          <marker id="arrowhead-cyan" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+            <polygon points="0 0, 10 3.5, 0 7" fill="#22d3ee" />
+          </marker>
+          <marker id="arrowhead-emerald" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+            <polygon points="0 0, 10 3.5, 0 7" fill="#34d399" />
+          </marker>
+          <marker id="arrowhead-amber" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+            <polygon points="0 0, 10 3.5, 0 7" fill="#fbbf24" />
+          </marker>
+          <marker id="arrowhead-rose" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+            <polygon points="0 0, 10 3.5, 0 7" fill="#fb7185" />
+          </marker>
+          <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+            <path d="M 40 0 L 0 0 0 40" fill="none" stroke="#1e293b" stroke-width="0.5"/>
+          </pattern>
+        </defs>
+
+        <!-- Background Grid -->
+        <rect width="100%" height="100%" fill="url(#grid)" />
+
+        <!-- =========================================================
+             REGION BOUNDARIES (drawn before components)
+             ========================================================= -->
+
+        <!-- Browser Use Cloud (amber dashed region, top-right) -->
+        <rect x="740" y="30" width="440" height="210" rx="12"
+              fill="rgba(251, 191, 36, 0.06)" stroke="#fbbf24"
+              stroke-width="1.2" stroke-dasharray="8,4"/>
+        <text x="758" y="52" fill="#fbbf24" font-size="11" font-weight="600">
+          ☁  Browser Use Cloud  —  api.browser-use.com
+        </text>
+
+        <!-- Local Machine (slate dashed region, bottom) -->
+        <rect x="20" y="270" width="1160" height="550" rx="12"
+              fill="rgba(148, 163, 184, 0.04)" stroke="#94a3b8"
+              stroke-width="1.2" stroke-dasharray="8,4"/>
+        <text x="38" y="292" fill="#94a3b8" font-size="11" font-weight="600">
+          ▢  Local Machine  —  user laptop or CI runner  (all processes share /tmp/bu-{NAME}.sock)
+        </text>
+
+        <!-- =========================================================
+             ARROWS (drawn before component boxes for z-order; masked
+             where they pass under semi-transparent fills)
+             ========================================================= -->
+
+        <!-- Agent stdin -> run.js -->
+        <line x1="212" y1="380" x2="232" y2="380" stroke="#22d3ee" stroke-width="1.5" marker-end="url(#arrowhead-cyan)"/>
+
+        <!-- run.js -> helpers.js  (vm context injection) -->
+        <line x1="130" y1="410" x2="130" y2="446" stroke="#22d3ee" stroke-width="1.5" marker-end="url(#arrowhead-cyan)"/>
+        <!-- run.js -> admin.js -->
+        <line x1="318" y1="410" x2="318" y2="446" stroke="#22d3ee" stroke-width="1.5" marker-end="url(#arrowhead-cyan)"/>
+
+        <!-- helpers.js -> daemon socket  (JSON newline request) -->
+        <line x1="212" y1="490" x2="458" y2="380" stroke="#34d399" stroke-width="1.5" marker-end="url(#arrowhead-emerald)"/>
+        <!-- daemon -> helpers.js (passive reply) -->
+        <line x1="458" y1="395" x2="212" y2="515" stroke="#64748b" stroke-width="1" stroke-dasharray="3,3"/>
+
+        <!-- admin.js -> daemon (spawn detached) -->
+        <path d="M 402 470 Q 430 470 458 445" fill="none" stroke="#fb7185" stroke-width="1.5" stroke-dasharray="5,4" marker-end="url(#arrowhead-rose)"/>
+
+        <!-- admin.js -> profile-use (local shell-out) -->
+        <path d="M 318 510 Q 260 620 230 705" fill="none" stroke="#fb7185" stroke-width="1.2" stroke-dasharray="4,3" marker-end="url(#arrowhead-rose)"/>
+
+        <!-- daemon CDP -> local Chrome -->
+        <line x1="710" y1="470" x2="768" y2="410" stroke="#34d399" stroke-width="1.5" marker-end="url(#arrowhead-emerald)"/>
+
+        <!-- Cross-boundary: daemon CDP -> Remote Cloud Browser (wss) -->
+        <path d="M 710 450 Q 820 350 880 230" fill="none" stroke="#34d399" stroke-width="1.5" marker-end="url(#arrowhead-emerald)"/>
+
+        <!-- Cross-boundary: admin.js -> api.browser-use.com -->
+        <path d="M 318 446 Q 318 220 830 128" fill="none" stroke="#fbbf24" stroke-width="1.5" stroke-dasharray="5,4" marker-end="url(#arrowhead-amber)"/>
+
+        <!-- Cross-boundary: daemon shutdown -> api.browser-use.com (PATCH stop) -->
+        <path d="M 585 620 Q 585 300 870 128" fill="none" stroke="#fb7185" stroke-width="1.2" stroke-dasharray="4,3" marker-end="url(#arrowhead-rose)"/>
+
+        <!-- Cross-boundary: profile-use -> api.browser-use.com -->
+        <path d="M 402 730 Q 650 500 860 128" fill="none" stroke="#fbbf24" stroke-width="1.5" stroke-dasharray="5,4" marker-end="url(#arrowhead-amber)"/>
+
+        <!-- Control plane inside cloud: Remote Browser <- api -->
+        <line x1="940" y1="150" x2="940" y2="163" stroke="#fbbf24" stroke-width="1.2" stroke-dasharray="4,3"/>
+
+        <!-- =========================================================
+             CLOUD REGION COMPONENTS
+             ========================================================= -->
+
+        <!-- api.browser-use.com -->
+        <rect x="760" y="70" width="400" height="62" rx="6" fill="#0f172a"/>
+        <rect x="760" y="70" width="400" height="62" rx="6"
+              fill="rgba(120, 53, 15, 0.3)" stroke="#fbbf24" stroke-width="1.5"/>
+        <text x="960" y="90" fill="white" font-size="12" font-weight="600" text-anchor="middle">api.browser-use.com / v3</text>
+        <text x="960" y="107" fill="#94a3b8" font-size="10" text-anchor="middle">POST /browsers  ·  PATCH /browsers/{id}  ·  GET /profiles</text>
+        <text x="960" y="123" fill="#fbbf24" font-size="9" text-anchor="middle">auth: X-Browser-Use-API-Key header</text>
+
+        <!-- Remote Cloud Browser -->
+        <rect x="760" y="165" width="400" height="62" rx="6" fill="#0f172a"/>
+        <rect x="760" y="165" width="400" height="62" rx="6"
+              fill="rgba(120, 53, 15, 0.3)" stroke="#fbbf24" stroke-width="1.5"/>
+        <text x="960" y="185" fill="white" font-size="12" font-weight="600" text-anchor="middle">Remote Cloud Browser  (optional)</text>
+        <text x="960" y="202" fill="#94a3b8" font-size="10" text-anchor="middle">wss cdpUrl  ·  cloud profile  ·  proxy  ·  recording  ·  liveUrl</text>
+        <text x="960" y="218" fill="#fbbf24" font-size="9" text-anchor="middle">free tier: 3 concurrent, timeout 1–240 min</text>
+
+        <!-- =========================================================
+             LOCAL MACHINE  —  column labels
+             ========================================================= -->
+
+        <!-- Agent Runtime sub-boundary -->
+        <rect x="35" y="315" width="400" height="485" rx="8" fill="transparent" stroke="#475569" stroke-width="1" stroke-dasharray="4,3"/>
+        <text x="49" y="335" fill="#94a3b8" font-size="10" font-weight="600">Agent Runtime  —  run.js  vm.createContext</text>
+
+        <!-- Daemon sub-boundary -->
+        <rect x="455" y="315" width="275" height="485" rx="8" fill="transparent" stroke="#475569" stroke-width="1" stroke-dasharray="4,3"/>
+        <text x="469" y="335" fill="#94a3b8" font-size="10" font-weight="600">Daemon Process  —  daemon.js per BU_NAME</text>
+
+        <!-- Local Chrome sub-boundary -->
+        <rect x="750" y="315" width="410" height="485" rx="8" fill="transparent" stroke="#475569" stroke-width="1" stroke-dasharray="4,3"/>
+        <text x="764" y="335" fill="#94a3b8" font-size="10" font-weight="600">Chromium  —  local CDP target (when not using cloud)</text>
+
+        <!-- =========================================================
+             AGENT RUNTIME column
+             ========================================================= -->
+
+        <!-- LLM Agent (external slate) -->
+        <rect x="50" y="350" width="160" height="60" rx="6" fill="#0f172a"/>
+        <rect x="50" y="350" width="160" height="60" rx="6"
+              fill="rgba(30, 41, 59, 0.5)" stroke="#94a3b8" stroke-width="1.5"/>
+        <text x="130" y="372" fill="white" font-size="11" font-weight="600" text-anchor="middle">LLM Agent</text>
+        <text x="130" y="388" fill="#94a3b8" font-size="9" text-anchor="middle">Claude Code / Codex</text>
+        <text x="130" y="402" fill="#94a3b8" font-size="8" text-anchor="middle">emits JS on stdin</text>
+
+        <!-- run.js (frontend cyan) -->
+        <rect x="232" y="350" width="172" height="60" rx="6" fill="#0f172a"/>
+        <rect x="232" y="350" width="172" height="60" rx="6"
+              fill="rgba(8, 51, 68, 0.4)" stroke="#22d3ee" stroke-width="1.5"/>
+        <text x="318" y="372" fill="white" font-size="11" font-weight="600" text-anchor="middle">run.js</text>
+        <text x="318" y="388" fill="#94a3b8" font-size="9" text-anchor="middle">reads stdin → vm ctx</text>
+        <text x="318" y="402" fill="#22d3ee" font-size="8" text-anchor="middle">top-level await wrapper</text>
+
+        <!-- helpers.js -->
+        <rect x="50" y="446" width="160" height="110" rx="6" fill="#0f172a"/>
+        <rect x="50" y="446" width="160" height="110" rx="6"
+              fill="rgba(6, 78, 59, 0.4)" stroke="#34d399" stroke-width="1.5"/>
+        <text x="130" y="468" fill="white" font-size="11" font-weight="600" text-anchor="middle">helpers.js</text>
+        <text x="130" y="486" fill="#94a3b8" font-size="9" text-anchor="middle">cdp · goto · click</text>
+        <text x="130" y="500" fill="#94a3b8" font-size="9" text-anchor="middle">page_info · screenshot</text>
+        <text x="130" y="514" fill="#94a3b8" font-size="9" text-anchor="middle">tabs · js · upload_file</text>
+        <text x="130" y="532" fill="#34d399" font-size="8" text-anchor="middle">agent edits this file</text>
+        <text x="130" y="546" fill="#94a3b8" font-size="8" text-anchor="middle">~195 lines</text>
+
+        <!-- admin.js -->
+        <rect x="232" y="446" width="172" height="110" rx="6" fill="#0f172a"/>
+        <rect x="232" y="446" width="172" height="110" rx="6"
+              fill="rgba(6, 78, 59, 0.4)" stroke="#34d399" stroke-width="1.5"/>
+        <text x="318" y="468" fill="white" font-size="11" font-weight="600" text-anchor="middle">admin.js</text>
+        <text x="318" y="486" fill="#94a3b8" font-size="9" text-anchor="middle">ensure_daemon / restart</text>
+        <text x="318" y="500" fill="#94a3b8" font-size="9" text-anchor="middle">start_remote_daemon</text>
+        <text x="318" y="514" fill="#94a3b8" font-size="9" text-anchor="middle">list_cloud_profiles</text>
+        <text x="318" y="528" fill="#94a3b8" font-size="9" text-anchor="middle">sync_local_profile</text>
+        <text x="318" y="546" fill="#34d399" font-size="8" text-anchor="middle">spawns daemon.js detached</text>
+
+        <!-- Self-healing callout (rose dashed) -->
+        <rect x="50" y="580" width="354" height="56" rx="8" fill="transparent" stroke="#fb7185" stroke-width="1" stroke-dasharray="4,4"/>
+        <text x="62" y="598" fill="#fb7185" font-size="8" font-weight="600">self-healing loop</text>
+        <text x="227" y="614" fill="#94a3b8" font-size="9" text-anchor="middle">missing capability → agent edits</text>
+        <text x="227" y="626" fill="#94a3b8" font-size="9" text-anchor="middle">helpers.js, adds fn, retries inline</text>
+
+        <!-- .env note -->
+        <rect x="50" y="650" width="354" height="42" rx="6" fill="#0f172a"/>
+        <rect x="50" y="650" width="354" height="42" rx="6"
+              fill="rgba(30, 41, 59, 0.5)" stroke="#94a3b8" stroke-width="1" stroke-dasharray="3,3"/>
+        <text x="227" y="667" fill="white" font-size="9" font-weight="600" text-anchor="middle">.env  (BU_NAME · BU_CDP_WS · BROWSER_USE_API_KEY)</text>
+        <text x="227" y="682" fill="#94a3b8" font-size="8" text-anchor="middle">loaded by both run.js and daemon.js</text>
+
+        <!-- profile-use CLI (also local, but shells out and talks to cloud) -->
+        <rect x="50" y="705" width="354" height="60" rx="6" fill="#0f172a"/>
+        <rect x="50" y="705" width="354" height="60" rx="6"
+              fill="rgba(30, 41, 59, 0.5)" stroke="#94a3b8" stroke-width="1.5"/>
+        <text x="227" y="724" fill="white" font-size="11" font-weight="600" text-anchor="middle">profile-use CLI</text>
+        <text x="227" y="740" fill="#94a3b8" font-size="9" text-anchor="middle">list / sync  (v1.0.4+)</text>
+        <text x="227" y="754" fill="#94a3b8" font-size="8" text-anchor="middle">local Chrome cookies → cloud profile</text>
+
+        <!-- =========================================================
+             DAEMON column
+             ========================================================= -->
+
+        <!-- Unix Socket Server -->
+        <rect x="470" y="350" width="250" height="60" rx="6" fill="#0f172a"/>
+        <rect x="470" y="350" width="250" height="60" rx="6"
+              fill="rgba(8, 51, 68, 0.4)" stroke="#22d3ee" stroke-width="1.5"/>
+        <text x="595" y="372" fill="white" font-size="11" font-weight="600" text-anchor="middle">Unix Socket Server</text>
+        <text x="595" y="388" fill="#94a3b8" font-size="9" text-anchor="middle">/tmp/bu-{NAME}.sock  (0600)</text>
+        <text x="595" y="402" fill="#22d3ee" font-size="8" text-anchor="middle">JSON + newline framing</text>
+
+        <!-- CDPClient -->
+        <rect x="470" y="440" width="250" height="68" rx="6" fill="#0f172a"/>
+        <rect x="470" y="440" width="250" height="68" rx="6"
+              fill="rgba(6, 78, 59, 0.4)" stroke="#34d399" stroke-width="1.5"/>
+        <text x="595" y="460" fill="white" font-size="11" font-weight="600" text-anchor="middle">CDPClient  (WebSocket)</text>
+        <text x="595" y="476" fill="#94a3b8" font-size="9" text-anchor="middle">send_raw(method, params, sid)</text>
+        <text x="595" y="490" fill="#94a3b8" font-size="9" text-anchor="middle">pending id → resolver map</text>
+        <text x="595" y="503" fill="#34d399" font-size="8" text-anchor="middle">256 MB payload, no deflate</text>
+
+        <!-- Event Buffer -->
+        <rect x="470" y="538" width="120" height="78" rx="6" fill="#0f172a"/>
+        <rect x="470" y="538" width="120" height="78" rx="6"
+              fill="rgba(76, 29, 149, 0.4)" stroke="#a78bfa" stroke-width="1.5"/>
+        <text x="530" y="558" fill="white" font-size="10" font-weight="600" text-anchor="middle">Event Buffer</text>
+        <text x="530" y="574" fill="#94a3b8" font-size="8" text-anchor="middle">last 500 CDP</text>
+        <text x="530" y="586" fill="#94a3b8" font-size="8" text-anchor="middle">events (drain)</text>
+        <text x="530" y="600" fill="#a78bfa" font-size="8" text-anchor="middle">+ dialog state</text>
+
+        <!-- Session Manager -->
+        <rect x="600" y="538" width="120" height="78" rx="6" fill="#0f172a"/>
+        <rect x="600" y="538" width="120" height="78" rx="6"
+              fill="rgba(76, 29, 149, 0.4)" stroke="#a78bfa" stroke-width="1.5"/>
+        <text x="660" y="558" fill="white" font-size="10" font-weight="600" text-anchor="middle">Session Mgr</text>
+        <text x="660" y="574" fill="#94a3b8" font-size="8" text-anchor="middle">attach first page</text>
+        <text x="660" y="586" fill="#94a3b8" font-size="8" text-anchor="middle">re-attach stale</text>
+        <text x="660" y="600" fill="#a78bfa" font-size="8" text-anchor="middle">🟢 tab marker</text>
+
+        <!-- Shutdown Hook -->
+        <rect x="470" y="645" width="250" height="56" rx="6" fill="#0f172a"/>
+        <rect x="470" y="645" width="250" height="56" rx="6"
+              fill="rgba(136, 19, 55, 0.4)" stroke="#fb7185" stroke-width="1.5"/>
+        <text x="595" y="666" fill="white" font-size="10" font-weight="600" text-anchor="middle">Shutdown Hook  (stop_remote)</text>
+        <text x="595" y="681" fill="#94a3b8" font-size="8" text-anchor="middle">SIGINT/SIGTERM → PATCH /browsers/{id}</text>
+        <text x="595" y="694" fill="#fb7185" font-size="8" text-anchor="middle">releases remote browser slot</text>
+
+        <!-- Daemon notes -->
+        <rect x="470" y="722" width="250" height="60" rx="6" fill="#0f172a"/>
+        <rect x="470" y="722" width="250" height="60" rx="6"
+              fill="rgba(30, 41, 59, 0.5)" stroke="#94a3b8" stroke-width="1" stroke-dasharray="3,3"/>
+        <text x="595" y="740" fill="white" font-size="9" font-weight="600" text-anchor="middle">one daemon per BU_NAME</text>
+        <text x="595" y="755" fill="#94a3b8" font-size="8" text-anchor="middle">idempotent bootstrap</text>
+        <text x="595" y="768" fill="#94a3b8" font-size="8" text-anchor="middle">log: /tmp/bu-{NAME}.log · pid: .pid</text>
+
+        <!-- =========================================================
+             LOCAL CHROME column
+             ========================================================= -->
+
+        <!-- Local Chrome big box -->
+        <rect x="770" y="350" width="370" height="430" rx="6" fill="#0f172a"/>
+        <rect x="770" y="350" width="370" height="430" rx="6"
+              fill="rgba(30, 41, 59, 0.5)" stroke="#94a3b8" stroke-width="1.5"/>
+        <text x="955" y="375" fill="white" font-size="12" font-weight="600" text-anchor="middle">Local Chrome / Edge</text>
+        <text x="955" y="395" fill="#94a3b8" font-size="10" text-anchor="middle">user’s real profile, real cookies</text>
+
+        <text x="955" y="425" fill="#22d3ee" font-size="10" font-weight="600" text-anchor="middle">discovery (daemon.js → get_ws_url)</text>
+        <text x="955" y="441" fill="#94a3b8" font-size="9" text-anchor="middle">reads DevToolsActivePort file in</text>
+        <text x="955" y="454" fill="#94a3b8" font-size="9" text-anchor="middle">~/Library/Application Support/Google/Chrome</text>
+        <text x="955" y="467" fill="#94a3b8" font-size="9" text-anchor="middle">(+ Edge, Chrome Canary/Dev, Linux, Windows)</text>
+
+        <text x="955" y="497" fill="#22d3ee" font-size="10" font-weight="600" text-anchor="middle">transport</text>
+        <text x="955" y="513" fill="#94a3b8" font-size="9" text-anchor="middle">TCP probe 127.0.0.1:{port} (30s deadline)</text>
+        <text x="955" y="526" fill="#94a3b8" font-size="9" text-anchor="middle">ws://127.0.0.1:{port}/{devtoolsPath}</text>
+
+        <text x="955" y="558" fill="#22d3ee" font-size="10" font-weight="600" text-anchor="middle">setup requirements</text>
+        <text x="955" y="574" fill="#94a3b8" font-size="9" text-anchor="middle">1. enable chrome://inspect/#remote-debugging</text>
+        <text x="955" y="587" fill="#94a3b8" font-size="9" text-anchor="middle">2. tick the checkbox when prompted</text>
+        <text x="955" y="600" fill="#94a3b8" font-size="9" text-anchor="middle">3. pick your normal profile</text>
+
+        <text x="955" y="632" fill="#22d3ee" font-size="10" font-weight="600" text-anchor="middle">target model</text>
+        <text x="955" y="648" fill="#94a3b8" font-size="9" text-anchor="middle">first real page becomes attached tab</text>
+        <text x="955" y="661" fill="#94a3b8" font-size="9" text-anchor="middle">chrome:// / devtools:// / about: excluded</text>
+        <text x="955" y="674" fill="#94a3b8" font-size="9" text-anchor="middle">Page · DOM · Runtime · Network enabled</text>
+
+        <text x="955" y="706" fill="#fb7185" font-size="10" font-weight="600" text-anchor="middle">visibility</text>
+        <text x="955" y="722" fill="#94a3b8" font-size="9" text-anchor="middle">🟢 prefix on tab title = agent-controlled</text>
+        <text x="955" y="735" fill="#94a3b8" font-size="9" text-anchor="middle">reapplied on load + domContentFired</text>
+
+        <text x="955" y="757" fill="#34d399" font-size="10" font-weight="600" text-anchor="middle">browser-side JS  (Runtime.evaluate, one-shot)</text>
+        <text x="955" y="772" fill="#94a3b8" font-size="9" text-anchor="middle">js()  ·  page_info  ·  _mark_tab  ·  wait_for_load  ·  dispatch_key</text>
+
+        <!-- =========================================================
+             ARROW LABELS
+             ========================================================= -->
+        <text x="222" y="374" fill="#22d3ee" font-size="8" text-anchor="middle">stdin</text>
+        <text x="150" y="432" fill="#22d3ee" font-size="8" text-anchor="middle">vm</text>
+        <text x="338" y="432" fill="#22d3ee" font-size="8" text-anchor="middle">vm</text>
+        <text x="325" y="422" fill="#94a3b8" font-size="9">_send()  —  JSON over unix</text>
+        <text x="325" y="500" fill="#64748b" font-size="8">reply {result|error}</text>
+        <text x="430" y="462" fill="#fb7185" font-size="8">spawn (detached)</text>
+        <text x="198" y="650" fill="#fb7185" font-size="8">spawnSync</text>
+        <text x="733" y="430" fill="#34d399" font-size="9">CDP</text>
+        <text x="780" y="308" fill="#34d399" font-size="9">CDP (wss)  — remote</text>
+        <text x="490" y="270" fill="#fbbf24" font-size="9">HTTPS (X-Browser-Use-API-Key)</text>
+        <text x="650" y="388" fill="#fb7185" font-size="8">PATCH stop on exit</text>
+        <text x="570" y="544" fill="#fbbf24" font-size="8" transform="rotate(-40 570 544)">upload cookies</text>
+
+        <!-- =========================================================
+             LEGEND (below both regions)
+             ========================================================= -->
+        <text x="30" y="842" fill="white" font-size="11" font-weight="600">Legend</text>
+
+        <rect x="90" y="832" width="16" height="10" rx="2" fill="rgba(8, 51, 68, 0.4)" stroke="#22d3ee" stroke-width="1"/>
+        <text x="112" y="841" fill="#94a3b8" font-size="9">Frontend / entry</text>
+
+        <rect x="230" y="832" width="16" height="10" rx="2" fill="rgba(6, 78, 59, 0.4)" stroke="#34d399" stroke-width="1"/>
+        <text x="252" y="841" fill="#94a3b8" font-size="9">Backend / logic</text>
+
+        <rect x="370" y="832" width="16" height="10" rx="2" fill="rgba(76, 29, 149, 0.4)" stroke="#a78bfa" stroke-width="1"/>
+        <text x="392" y="841" fill="#94a3b8" font-size="9">State (buffer / session)</text>
+
+        <rect x="560" y="832" width="16" height="10" rx="2" fill="rgba(120, 53, 15, 0.3)" stroke="#fbbf24" stroke-width="1"/>
+        <text x="582" y="841" fill="#94a3b8" font-size="9">Cloud service</text>
+
+        <rect x="690" y="832" width="16" height="10" rx="2" fill="rgba(136, 19, 55, 0.4)" stroke="#fb7185" stroke-width="1"/>
+        <text x="712" y="841" fill="#94a3b8" font-size="9">Lifecycle / security</text>
+
+        <rect x="840" y="832" width="16" height="10" rx="2" fill="rgba(30, 41, 59, 0.5)" stroke="#94a3b8" stroke-width="1"/>
+        <text x="862" y="841" fill="#94a3b8" font-size="9">External (user / tool)</text>
+
+        <line x1="30" y1="866" x2="46" y2="866" stroke="#34d399" stroke-width="1.5"/>
+        <text x="52" y="870" fill="#94a3b8" font-size="9">CDP / socket traffic</text>
+
+        <line x1="200" y1="866" x2="216" y2="866" stroke="#fb7185" stroke-width="1.5" stroke-dasharray="4,3"/>
+        <text x="222" y="870" fill="#94a3b8" font-size="9">process lifecycle</text>
+
+        <line x1="360" y1="866" x2="376" y2="866" stroke="#fbbf24" stroke-width="1.5" stroke-dasharray="4,3"/>
+        <text x="382" y="870" fill="#94a3b8" font-size="9">HTTPS to cloud API</text>
+
+        <line x1="530" y1="866" x2="546" y2="866" stroke="#64748b" stroke-width="1" stroke-dasharray="3,3"/>
+        <text x="552" y="870" fill="#94a3b8" font-size="9">response / passive</text>
+
+        <rect x="700" y="861" width="16" height="10" rx="2" fill="transparent" stroke="#fbbf24" stroke-width="1" stroke-dasharray="6,3"/>
+        <text x="722" y="870" fill="#94a3b8" font-size="9">Cloud region</text>
+
+        <rect x="840" y="861" width="16" height="10" rx="2" fill="transparent" stroke="#94a3b8" stroke-width="1" stroke-dasharray="6,3"/>
+        <text x="862" y="870" fill="#94a3b8" font-size="9">Local machine</text>
+      </svg>
+    </div>
+
+    <!-- Info Cards -->
+    <div class="cards">
+      <div class="card">
+        <div class="card-header">
+          <div class="card-dot slate"></div>
+          <h3>Local Machine</h3>
+        </div>
+        <ul>
+          <li>• Everything inside the slate boundary runs on the user's laptop (or CI runner)</li>
+          <li>• Agent runtime + daemon communicate over <code>/tmp/bu-{NAME}.sock</code> — a unix socket, so same host only</li>
+          <li>• Multiple named harnesses (<code>BU_NAME</code>) can coexist; each gets its own socket + daemon + log</li>
+          <li>• <code>profile-use</code> CLI also runs locally, but uploads cookies to the cloud over HTTPS</li>
+        </ul>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <div class="card-dot amber"></div>
+          <h3>Browser Use Cloud</h3>
+        </div>
+        <ul>
+          <li>• <code>api.browser-use.com/v3</code> — provisions remote browsers, stores cloud profiles</li>
+          <li>• Remote browser is a Chromium instance reachable over <code>wss://</code> CDP</li>
+          <li>• Authenticated with <code>X-Browser-Use-API-Key</code> from <code>.env</code></li>
+          <li>• Daemon PATCH-stops the remote on SIGINT/SIGTERM so it doesn't burn concurrency quota</li>
+        </ul>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <div class="card-dot emerald"></div>
+          <h3>Crossing the boundary</h3>
+        </div>
+        <ul>
+          <li>• The only traffic leaving the laptop is HTTPS (to the API) and WSS (to a remote Chrome)</li>
+          <li>• Local Chrome never leaves the machine — CDP is <code>ws://127.0.0.1</code></li>
+          <li>• Switching local ↔ cloud is one env var: <code>BU_CDP_WS</code> — the rest of the stack is identical</li>
+          <li>• <code>start_remote_daemon()</code> fetches <code>cdpUrl/json/version</code> to resolve the <code>wss://</code> path, then spawns the daemon with that URL</li>
+        </ul>
+      </div>
+    </div>
+
+    <!-- Footer -->
+    <p class="footer">
+      browser-harness / js  •  agent runtime + daemon always local  •  Chromium may be local (127.0.0.1 CDP) or remote (wss to Browser Use Cloud)
+    </p>
+  </div>
+</body>
+</html>

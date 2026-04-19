@@ -1,0 +1,239 @@
+# Hacker News — Data Extraction
+
+`https://news.ycombinator.com` — YCombinator's link aggregator. Three access paths tested: `http_get` DOM scraping, Algolia search API, and the official HN Firebase API. All work without a browser.
+
+## Do this first: pick your access path
+
+| Goal | Best approach | Latency |
+|------|--------------|---------|
+| Current front page (30 stories, real-time) | `http_get` + regex | ~170ms |
+| Historical / keyword search | Algolia search API | ~400ms |
+| Full comment tree (nested) | Algolia items API | ~300ms |
+| Specific item by ID | Firebase API | ~200ms |
+| 500 ranked story IDs | Firebase topstories | ~200ms (+ ~190ms/item after) |
+
+**Never use a browser for read-only HN tasks.** Everything is accessible over HTTP with no auth, no JS rendering needed.
+
+A small HTML-entity decoder is reused below — JS has no stdlib equivalent of `html.unescape`:
+
+```js
+const unescapeHtml = (s) => s
+  .replace(/&#x([0-9a-f]+);/gi, (_, h) => String.fromCharCode(parseInt(h, 16)))
+  .replace(/&#(\d+);/g, (_, n) => String.fromCharCode(parseInt(n, 10)))
+  .replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">")
+  .replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&nbsp;/g, " ");
+```
+
+---
+
+## Path 1: http_get front page (fastest for real-time data)
+
+The front page HTML is ~34KB. Story order matches Firebase `/topstories.json` exactly — confirmed identical on 2026-04-18.
+
+```js
+const page = await http_get("https://news.ycombinator.com");
+
+// Extract all 30 story IDs (in rank order)
+const story_ids = [...page.matchAll(/<tr class="athing submission" id="(\d+)">/g)].map(m => m[1]);
+
+// Extract titles + URLs (same order as IDs)
+const titles_urls = [...page.matchAll(
+  /class="titleline"[^>]*><a href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/g
+)].map(m => [m[1], m[2]]);
+
+// Extract scores keyed by story ID (job posts have no score row)
+const scores_by_id = {};
+for (const m of page.matchAll(/<span class="score" id="score_(\d+)">(\d+) points<\/span>/g)) {
+  scores_by_id[m[1]] = parseInt(m[2], 10);
+}
+
+// Extract authors keyed by story ID (anchor on score span, /s flag for dot-matches-newline)
+const authors_by_id = {};
+const authorRe = /<span class="score" id="score_(\d+)">\d+ points<\/span>[\s\S]*?class="hnuser">([\s\S]*?)<\/a>/g;
+for (const m of page.matchAll(authorRe)) {
+  authors_by_id[m[1]] = m[2];
+}
+
+// Extract comment counts keyed by story ID
+const comments_by_id = {};
+for (const m of page.matchAll(/href="item\?id=(\d+)">(\d+)&nbsp;comments<\/a>/g)) {
+  comments_by_id[m[1]] = parseInt(m[2], 10);
+}
+
+const stories = [];
+story_ids.forEach((sid, i) => {
+  const [url, raw_title] = titles_urls[i] || ["", ""];
+  stories.push({
+    rank: i + 1,
+    id: sid,
+    title: unescapeHtml(raw_title),       // MUST unescape — titles contain &#x27; etc.
+    url,
+    score: scores_by_id[sid] ?? null,     // null for job posts
+    author: authors_by_id[sid] ?? null,
+    comments: comments_by_id[sid] ?? 0,
+  });
+});
+```
+
+**Gotchas:**
+- Titles contain HTML entities (`&#x27;` `&amp;` `&quot;` `&gt;`). Always run the decoder.
+- `<tr class="athing submission" id="...">` — the class is `athing submission`, not just `athing`. The `athing comtr` class is for comment rows.
+- Job/hiring posts (YC ads) appear in the list but have no score or author. `scores_by_id[sid]` is `undefined` for them — check before comparing.
+- Greedy multi-line patterns can cross story boundaries. Use ID-anchored patterns (as above) instead of positional zip for score/author.
+- The page only serves page 1 (30 items). Pages 2–4 exist at `?p=2` etc. but require a login cookie for page 3+.
+
+---
+
+## Path 2: Algolia search API (best for historical / keyword search)
+
+No rate limiting observed. Returns up to 1000 hits per query (`hitsPerPage` max is capped at ~1000 per Algolia plan).
+
+```js
+// Keyword search — sorted by relevance
+let data = JSON.parse(await http_get(
+  "https://hn.algolia.com/api/v1/search"
+  + "?query=llm&tags=story&hitsPerPage=20"
+));
+
+// Date-sorted (most recent first)
+data = JSON.parse(await http_get(
+  "https://hn.algolia.com/api/v1/search_by_date"
+  + "?tags=story&hitsPerPage=20"
+));
+
+// Paginate: add &page=N (0-indexed), up to data.nbPages-1
+```
+
+**Fields returned per story hit:**
+```
+objectID, title, url, author, points, num_comments,
+created_at (ISO 8601), created_at_i (unix ts), story_id,
+children (array of comment IDs — flat, not tree),
+_tags, _highlightResult
+```
+
+**Fields returned per comment hit:**
+```
+objectID, comment_text, author, story_id, story_title, story_url,
+parent_id, created_at, created_at_i, points
+```
+Note: comment hits use `comment_text`, NOT `text`. Story hits use `story_text` for self-post body.
+
+### Tag filters
+
+Tags are AND by default, OR with parentheses:
+
+```
+// Story types
+"tags=story"           // regular link/self posts
+"tags=show_hn"         // Show HN
+"tags=ask_hn"          // Ask HN
+"tags=poll"            // polls
+"tags=job"             // job posts
+
+// Combined AND
+"tags=story,front_page"          // currently on front page
+"tags=story,author_pg"           // stories submitted by pg
+
+// OR
+"tags=(ask_hn,show_hn),story"    // Ask OR Show HN
+
+// By story ID (gets story + all its comments)
+"tags=story_47806725"
+```
+
+### Numeric filters
+
+```
+// Date range (unix timestamps)
+"numericFilters=created_at_i>1745000000"
+"numericFilters=created_at_i>1700000000,created_at_i<1750000000"
+
+// Point threshold
+"numericFilters=points>100"
+"numericFilters=points>500,points<1000"
+```
+
+### Full Algolia items API (nested comment tree)
+
+```js
+const thread = JSON.parse(await http_get(
+  "https://hn.algolia.com/api/v1/items/47806725"
+));
+// thread.children = array of top-level comment objects
+// Each comment: author, text (HTML), created_at, children (nested replies)
+// Recursively walk children for full thread
+
+// Total comment count (recursive walk with stack):
+const stack = [...(thread.children || [])];
+let total = 0;
+while (stack.length) {
+  const node = stack.pop();
+  total += 1;
+  stack.push(...(node.children || []));
+}
+```
+
+Confirmed: Algolia items returns 653 total comments for a 659-comment thread (some deleted). `text` field in items API is HTML with `<p>` tags and `<a>` links — may need to strip tags.
+
+---
+
+## Path 3: Official HN Firebase API
+
+Clean JSON, no scraping. Use for fetching specific items or building live feeds.
+
+```js
+// Ranked story ID lists (no metadata — just IDs)
+const top   = JSON.parse(await http_get("https://hacker-news.firebaseio.com/v0/topstories.json"));  // 500 IDs
+const new_  = JSON.parse(await http_get("https://hacker-news.firebaseio.com/v0/newstories.json"));  // 500 IDs
+const best  = JSON.parse(await http_get("https://hacker-news.firebaseio.com/v0/beststories.json")); // 200 IDs
+const ask   = JSON.parse(await http_get("https://hacker-news.firebaseio.com/v0/askstories.json"));  // ~32 IDs
+const show  = JSON.parse(await http_get("https://hacker-news.firebaseio.com/v0/showstories.json")); // ~119 IDs
+const jobs  = JSON.parse(await http_get("https://hacker-news.firebaseio.com/v0/jobstories.json"));  // ~31 IDs
+
+// Fetch a single item
+const item = JSON.parse(await http_get(
+  "https://hacker-news.firebaseio.com/v0/item/47806725.json"
+));
+// Fields: id, type, by, title, url, score, descendants (total comment count),
+//         time (unix ts), kids (array of top-level comment IDs), text (self-post body)
+
+// Fetch a user profile
+const user = JSON.parse(await http_get(
+  "https://hacker-news.firebaseio.com/v0/user/pg.json"
+));
+// Fields: id, karma, created (unix ts), about (HTML), submitted (array of item IDs)
+
+// Highest current item ID (useful for polling new items)
+const maxid = JSON.parse(await http_get("https://hacker-news.firebaseio.com/v0/maxitem.json"));
+```
+
+**Firebase vs Algolia tradeoff:**
+- Firebase `topstories` gives you 500 IDs in one call but then requires one HTTP call per item (~190ms each). Fetching all 500 items sequentially would take ~100 seconds.
+- Algolia returns full story data (title, points, author, comments) in one call for up to ~1000 results.
+- For "top 30 stories with full metadata": use `http_get` front page scrape (170ms total). For "top 500 stories with full metadata": use Algolia with `tags=front_page` or loop pages.
+
+---
+
+## Comment thread HTML (item page)
+
+For a large thread, the item page HTML (~1MB for 659 comments) loads ALL comments flat in a single request — no pagination, no JS required.
+
+```js
+const page = await http_get("https://news.ycombinator.com/item?id=47806725");
+
+// Count all comment IDs
+const comment_ids = [...page.matchAll(/<tr class="athing comtr" id="(\d+)">/g)].map(m => m[1]);
+// comment_ids.length matches total comment count
+
+// Extract comment texts (careful: text spans multiple lines with <p> tags)
+// Use Algolia items API instead for structured access
+```
+
+For structured comment access prefer Algolia items API — it returns a proper nested tree. The HTML item page is useful only when you need approximate comment count without an API call.
+
+---
+
+## Do NOT use a browser for HN
+
+All data is in plain HTML or JSON APIs. `goto()` + `wait_for_load()` takes 3–8 seconds; `http_get` takes 170–400ms. The JS `querySelectorAll` approach works (tested, returns correct data) but is 20–50x slower with no benefit.

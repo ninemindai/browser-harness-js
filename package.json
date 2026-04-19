@@ -1,0 +1,19 @@
+{
+  "name": "browser-harness",
+  "version": "0.1.0",
+  "description": "The simplest, thinnest, and most powerful harness to control your real browser with your agent.",
+  "type": "module",
+  "bin": {
+    "browser-harness": "run.js"
+  },
+  "scripts": {
+    "start": "node run.js",
+    "daemon": "node daemon.js"
+  },
+  "engines": {
+    "node": ">=20.11"
+  },
+  "dependencies": {
+    "ws": "~8.20.0"
+  }
+}

@@ -1,0 +1,92 @@
+# Profile sync
+
+Make a remote Browser Use browser start already logged in, by uploading cookies from a local Chrome profile.
+
+## One-time install
+
+```bash
+curl -fsSL https://browser-use.com/profile.sh | sh
+```
+
+Downloads `profile-use` (macOS / Linux / Windows, x64 / arm64). The JS helpers shell out to it; you don't run `profile-use` directly.
+
+## JS API (pre-injected in `browser-harness <<'JS'`)
+
+```js
+await list_cloud_profiles();
+// [{id, name, userId, cookieDomains, lastUsedAt}, ...] — every profile under this API key
+
+list_local_profiles();
+// [{BrowserName, ProfileName, DisplayName, ProfilePath, ...}, ...] — detected on this machine
+// (synchronous — shells out to `profile-use list --json`)
+
+sync_local_profile(local_profile_name, {
+  browser,           // disambiguate when multiple browsers have a profile of the same name
+  cloudProfileId,    // update an existing cloud profile instead of creating new
+  includeDomains,    // only these domains (and subdomains); leading dot optional
+  excludeDomains,    // drop these domains; applied before include
+});
+// Shells out to `profile-use sync`. Returns the cloud profile UUID
+// (the existing one if cloudProfileId was passed, else the newly-created one).
+
+await start_remote_daemon({ name: "work", profileName: "my-work" });   // name→id resolved client-side
+await start_remote_daemon({ name: "work", profileId: "<uuid>" });      // or pass UUID directly
+```
+
+## Chat-driven flow (don't guess — ask the user)
+
+Cookies are real auth. Don't sync or pick a profile unilaterally.
+
+```js
+// 1. Show what's already in the cloud.
+for (const p of await list_cloud_profiles()) {
+  console.log(
+    `${p.name.padEnd(25)}  ${String(p.cookieDomains.length).padStart(3)} domains  ${p.id}`
+  );
+}
+```
+→ Agent: *"You have these cloud profiles (<N> domains each). Want to reuse one, sync a local profile, or start clean?"*
+
+```js
+// 2a. Reuse cloud → one call.
+await start_remote_daemon({ name: "work", profileName: "browser-use.com" });
+
+// 2b. Sync local first. Show the options:
+for (const lp of list_local_profiles()) {
+  console.log(lp.DisplayName);
+}
+```
+→ Agent: *"Which local profile?"* → user picks → before syncing, inspect domain-level cookie counts with `profile-use inspect --profile <name>` (or `--verbose` for individual cookies) and report the summary; never dump 500 cookies into chat.
+
+```js
+// 3. Sync + use. Returns the cloud UUID.
+const uuid = sync_local_profile("browser-use.com");
+await start_remote_daemon({ name: "work", profileId: uuid });
+
+// 3b. Refresh that same cloud profile later (idempotent — no duplicate profiles).
+sync_local_profile("browser-use.com", { cloudProfileId: uuid });
+
+// 3c. Scoped: push *only* Stripe cookies into a dedicated cloud profile.
+sync_local_profile("browser-use.com", {
+  cloudProfileId: uuid,
+  includeDomains: ["stripe.com"],
+});
+```
+
+## What actually gets synced
+
+**Cookies only.** No localStorage, no IndexedDB, no extensions. Enough for session-cookie sites (Google, GitHub, Stripe, most SaaS); not for sites that store auth in localStorage.
+
+Cookies mutated during a remote session only persist on a clean `PATCH /browsers/{id} {"action":"stop"}` — the daemon does this on shutdown when `BU_BROWSER_ID` + `BROWSER_USE_API_KEY` are set (default for remote daemons). Sessions that hit the timeout lose in-session state.
+
+## Cloud profile CRUD
+
+- UI: https://cloud.browser-use.com/settings?tab=profiles
+- API: `GET /api/v3/profiles`, `GET/PATCH/DELETE /api/v3/profiles/{id}`. Fields: `id`, `name`, `userId`, `lastUsedAt`, `cookieDomains[]`. `list_cloud_profiles()` wraps this.
+- Name → UUID: `profileName` on `start_remote_daemon` resolves client-side; no API change needed.
+
+## Traps
+
+- **Close the target Chrome profile before syncing.** `profile-use` reads the `Cookies` SQLite DB, which Chrome holds with an exclusive lock — `sync` hangs otherwise.
+- **Default proxy (`proxyCountryCode: "us"`) blocks some destinations** with `ERR_TUNNEL_CONNECTION_FAILED` (e.g. `cloud.browser-use.com` itself). `proxyCountryCode: null` disables the BU proxy; a different country code picks a different exit.
+- **Prefer a dedicated work profile over your personal one.** Especially while testing.
