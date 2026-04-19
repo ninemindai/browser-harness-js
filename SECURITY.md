@@ -152,6 +152,48 @@ Grouped by tier. Each entry: **What → Why (threat) → Sketch → Cost → Tra
 - **Cost:** ~10 lines in run.js; the harder cost is explaining when to use it.
 - **Tradeoff:** Most domain skills assume those globals. Adoption likely low. Ship only if there's demand.
 
+#### 3.10 Repo checkout is a trust boundary
+
+- **Why:** Three modules (`helpers.js`, `admin.js`, `daemon.js`) each call their own `_load_env()` on import, reading `.env` from the module's directory with no integrity check. Anyone with write access to the repo therefore controls `BROWSER_USE_API_KEY`, `BU_CDP_WS_ALLOW_HOSTS`, `BU_ALLOWED_PATHS`, and `BU_HTTP_GET_DENY`. `helpers.js` itself also executes, so write access was already equivalent to code execution — but the env-var path is quieter and worth calling out.
+- **What:** Doc-only. State in `install.md` and `SKILL.md` that the repo checkout must live in a location only the operator can write (not a shared `/opt/...`, not a world-writable `/tmp/...`). Recommend a per-user path like `~/Developer/browser-harness`.
+- **Cost:** A paragraph.
+- **Tradeoff:** None — we're just naming a pre-existing invariant so operators don't trip over it.
+
+#### 3.11 CDP filesystem-write methods bypass `upload_file`'s gate
+
+- **Why:** `_check_path` lives in `helpers.js`. An agent that rewrites `helpers.js` or calls `cdp('DOM.setFileInputFiles', …)` / `cdp('Browser.setDownloadBehavior', …)` directly sidesteps the guard. `DOM.setFileInputFiles` leaks any file your uid can read; `Browser.setDownloadBehavior` lets a downloaded response land in `~/.ssh/authorized_keys`.
+- **What:** Mirror `_check_path` into `daemon.js` and intercept `DOM.setFileInputFiles`, `Browser.setDownloadBehavior`, `Page.setDownloadBehavior` in `Daemon.handle`. The daemon is the trusted layer; the helpers check is now advisory.
+- **Cost:** ~25 lines. Duplication of the allowlist logic is deliberate — `helpers.js` is agent-editable by design, the daemon is not.
+- **Tradeoff:** Daemon uses a strict `realpathSync` (file must exist); screenshots don't go through daemon paths, so they keep the lenient parent-realpath fallback in `helpers.js`.
+
+#### 3.12 Symlink escape in `_check_path`
+
+- **Why:** `path.resolve(p)` is a string operation — it doesn't follow symlinks. A symlink planted under an allowed prefix (e.g. `/tmp/link → ~/.ssh/id_ed25519`) passes the prefix check, and `upload_file` happily uploads the real target.
+- **What:** `_check_path` now calls `fs.realpathSync` on the input *and* on each allowlist entry. For not-yet-existent destinations (screenshot output), realpath the closest existing ancestor and rejoin. As a side effect this also fixes a latent macOS bug where the literal `/tmp` prefix never matched canonicalised paths (`/tmp` is a symlink to `/private/tmp`).
+- **Cost:** ~20 lines.
+- **Tradeoff:** TOCTOU between check and write is not addressed. Acceptable for the stated threat (agent-initiated escape); a same-machine attacker racing file replacement is a separate threat.
+
+#### 3.13 `/tmp/bu-*` sidecar files follow symlinks
+
+- **Why:** `_claim_sock_path` defends only the socket. `LOG`, `PID`, `HELPERS_HASH_FILE`, and `/tmp/bu-<NAME>.remote.json` all use `fs.writeFileSync` / `readFileSync`, which follow symlinks. On a shared host, another local user can pre-plant `/tmp/bu-default.log → ~/.bashrc` before the daemon starts and the daemon clobbers it; a pre-planted read target leaks its contents into `_log_tail`'s error surface.
+- **What:** Open every `/tmp/bu-*` sidecar with `O_NOFOLLOW` via small `_read_nofollow` / `_write_nofollow` helpers in `daemon.js` and `admin.js`. `O_NOFOLLOW` is `0` on Windows, so the change is a no-op there (acceptable — the cross-tenant symlink threat is Unix-specific).
+- **Cost:** ~40 lines, duplicated across the two trusted modules.
+- **Tradeoff:** If an attacker plants a symlink before daemon start, the daemon now fails to start rather than silently clobbering the target. That's a DoS in exchange for integrity — worth it.
+
+#### 3.14 `profile-use` argument smuggling
+
+- **Why:** `spawnSync('profile-use', ['sync', '--profile', profileName, …])` passes user-controlled values positionally. `spawnSync` with an array blocks shell injection, but a `profileName` of `--some-other-flag` is passed through to `profile-use` and re-interpreted by its CLI parser.
+- **What:** Reject any user-controlled value that starts with `-` before building the argv. Validates `profileName`, `browser`, `cloudProfileId`, and each entry in `includeDomains` / `excludeDomains`.
+- **Cost:** ~10 lines.
+- **Tradeoff:** Profile names containing leading hyphens are now rejected. No legitimate profile name starts with `-`.
+
+#### 3.15 `http_get` SSRF default-deny for cloud metadata
+
+- **Why:** `http_get` forwarded any URL to `fetch` unchecked. A prompt-injected agent could hit AWS IMDS (`169.254.169.254`), GCP metadata (`metadata.google.internal`), or any IPv4 link-local address to exfiltrate instance credentials.
+- **What:** Block those hosts (and the entire `169.254.0.0/16` link-local range by hostname regex) by default. Override via `BU_HTTP_GET_DENY` (comma-separated host list; set empty to disable).
+- **Cost:** ~15 lines.
+- **Tradeoff:** Does not defend against DNS rebinding (`evil.example.com` → `169.254.169.254`) — hostname-only check. Also does not block loopback (`127.0.0.1`) or RFC1918 ranges; those have too many legitimate local-dev uses to block by default.
+
 ## 4. Non-goals (and why)
 
 We deliberately do **not** propose:

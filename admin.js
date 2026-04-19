@@ -28,10 +28,30 @@ function _paths(name) {
   return [`/tmp/bu-${n}.sock`, `/tmp/bu-${n}.pid`];
 }
 
+// O_NOFOLLOW reads/writes for /tmp/bu-* sidecars. Mirrors the pattern in
+// daemon.js; see SECURITY.md §3.4 for the threat model (local symlink planting).
+const O_NOFOLLOW = fs.constants.O_NOFOLLOW || 0;
+function _read_nofollow(p) {
+  const fd = fs.openSync(p, fs.constants.O_RDONLY | O_NOFOLLOW);
+  try {
+    const st = fs.fstatSync(fd);
+    const buf = Buffer.alloc(st.size);
+    let off = 0;
+    while (off < st.size) off += fs.readSync(fd, buf, off, st.size - off, null);
+    return buf;
+  } finally { fs.closeSync(fd); }
+}
+function _write_nofollow(p, data) {
+  const flags = fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_TRUNC | O_NOFOLLOW;
+  const fd = fs.openSync(p, flags, 0o600);
+  try { fs.writeSync(fd, data); }
+  finally { fs.closeSync(fd); }
+}
+
 function _log_tail(name) {
   const p = `/tmp/bu-${name || NAME}.log`;
   try {
-    const lines = fs.readFileSync(p, 'utf8').trim().split('\n');
+    const lines = _read_nofollow(p).toString('utf8').trim().split('\n');
     return lines[lines.length - 1] || null;
   } catch { return null; }
 }
@@ -209,7 +229,7 @@ async function _reap_stale_remotes() {
     if (await daemon_alive(stateName)) continue;
     const p = `/tmp/${f}`;
     let state;
-    try { state = JSON.parse(fs.readFileSync(p, 'utf8')); }
+    try { state = JSON.parse(_read_nofollow(p).toString('utf8')); }
     catch { try { fs.unlinkSync(p); } catch {} continue; }
     if (state && state.id) {
       try {
@@ -243,10 +263,9 @@ async function start_remote_daemon({ name = 'remote', profileName, ...createOpts
   }
   const browser = await _browser_use('/browsers', 'POST', createOpts);
   try {
-    fs.writeFileSync(
+    _write_nofollow(
       _remote_state_path(name),
-      JSON.stringify({ id: browser.id, name, createdAt: Date.now() }),
-      { mode: 0o600 }
+      JSON.stringify({ id: browser.id, name, createdAt: Date.now() })
     );
   } catch {}
   await ensure_daemon({
@@ -271,13 +290,24 @@ function list_local_profiles() {
 //
 // Shells out to `profile-use sync` (v1.0.4+). Requires BROWSER_USE_API_KEY and the
 // target local Chrome profile to be closed.
+// Reject values that would be interpreted as another flag by profile-use's
+// CLI parser -- `spawnSync` with an array blocks shell injection but not
+// option smuggling (a profileName of "--cookies-only" could re-enable flags).
+function _noFlagArg(v, field) {
+  if (typeof v !== 'string' || !v.length) throw new Error(`invalid ${field}: ${JSON.stringify(v)}`);
+  if (v.startsWith('-')) throw new Error(`${field} must not start with "-": ${JSON.stringify(v)}`);
+  return v;
+}
 function sync_local_profile(profileName, { browser, cloudProfileId, includeDomains, excludeDomains } = {}) {
   if (!process.env.BROWSER_USE_API_KEY) throw new Error('BROWSER_USE_API_KEY missing');
+  _noFlagArg(profileName, 'profileName');
+  if (browser !== undefined) _noFlagArg(browser, 'browser');
+  if (cloudProfileId !== undefined) _noFlagArg(cloudProfileId, 'cloudProfileId');
   const cmd = ['sync', '--profile', profileName];
   if (browser) cmd.push('--browser', browser);
   if (cloudProfileId) cmd.push('--cloud-profile-id', cloudProfileId);
-  for (const d of includeDomains || []) cmd.push('--domain', d);
-  for (const d of excludeDomains || []) cmd.push('--exclude-domain', d);
+  for (const d of includeDomains || []) cmd.push('--domain', _noFlagArg(d, 'includeDomain'));
+  for (const d of excludeDomains || []) cmd.push('--exclude-domain', _noFlagArg(d, 'excludeDomain'));
   const r = spawnSync('profile-use', cmd, { encoding: 'utf8' });
   if (r.error && r.error.code === 'ENOENT') {
     throw new Error('profile-use not installed -- curl -fsSL https://browser-use.com/profile.sh | sh');

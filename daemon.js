@@ -67,8 +67,34 @@ const BU_API = 'https://api.browser-use.com/api/v3';
 const REMOTE_ID = process.env.BU_BROWSER_ID;
 const API_KEY = process.env.BROWSER_USE_API_KEY;
 
+// Open /tmp/bu-* files with O_NOFOLLOW so a local attacker can't pre-plant a
+// symlink (e.g. /tmp/bu-default.log -> ~/.bashrc) and have the daemon clobber
+// it or leak its contents. _claim_sock_path defends the socket; these helpers
+// defend the log/pid/hash sidecars (SECURITY.md §3.4).
+const O_NOFOLLOW = fs.constants.O_NOFOLLOW || 0;
+
+function _write_nofollow(p, data, { append = false } = {}) {
+  const flags = fs.constants.O_WRONLY | fs.constants.O_CREAT | O_NOFOLLOW
+    | (append ? fs.constants.O_APPEND : fs.constants.O_TRUNC);
+  const fd = fs.openSync(p, flags, 0o600);
+  try { fs.writeSync(fd, data); }
+  finally { fs.closeSync(fd); }
+}
+
+function _read_nofollow(p) {
+  const fd = fs.openSync(p, fs.constants.O_RDONLY | O_NOFOLLOW);
+  try {
+    const st = fs.fstatSync(fd);
+    const buf = Buffer.alloc(st.size);
+    let off = 0;
+    while (off < st.size) off += fs.readSync(fd, buf, off, st.size - off, null);
+    return buf;
+  } finally { fs.closeSync(fd); }
+}
+
 function log(msg) {
-  fs.appendFileSync(LOG, `${msg}\n`);
+  try { _write_nofollow(LOG, `${msg}\n`, { append: true }); }
+  catch { /* log file missing or swapped for non-file -- don't crash the daemon */ }
 }
 
 function _probe_tcp(host, port, timeoutMs) {
@@ -293,6 +319,14 @@ class Daemon {
       try { for (const f of params.files || []) _check_path(f); }
       catch (e) { return { error: e.message }; }
     }
+    // Gate the other CDP filesystem-write vectors: an attacker that can set
+    // download dir + trigger a download can plant arbitrary files outside
+    // BU_ALLOWED_PATHS (e.g. ~/.ssh/authorized_keys). Same guard as uploads.
+    if ((method === 'Browser.setDownloadBehavior' || method === 'Page.setDownloadBehavior')
+        && params.downloadPath) {
+      try { _check_path(params.downloadPath); }
+      catch (e) { return { error: e.message }; }
+    }
     // Browser-level Target.* calls must not use a session (stale or otherwise).
     // For everything else, explicit session in req wins; else default.
     const sid = method.startsWith('Target.') ? null : (req.session_id || this.session);
@@ -372,10 +406,10 @@ function _audit_helpers() {
   try { src = fs.readFileSync(HELPERS_PATH); } catch { return; }
   const cur = crypto.createHash('sha256').update(src).digest('hex');
   let prev = null;
-  try { prev = fs.readFileSync(HELPERS_HASH_FILE, 'utf8').trim(); } catch {}
+  try { prev = _read_nofollow(HELPERS_HASH_FILE).toString('utf8').trim(); } catch {}
   if (prev && prev !== cur) log(`helpers.js changed: ${prev.slice(0, 12)} -> ${cur.slice(0, 12)} (${src.length} bytes)`);
   else if (!prev) log(`helpers.js sha256 ${cur.slice(0, 12)} (${src.length} bytes)`);
-  try { fs.writeFileSync(HELPERS_HASH_FILE, cur); } catch {}
+  try { _write_nofollow(HELPERS_HASH_FILE, cur); } catch {}
 }
 
 async function main() {
@@ -401,8 +435,8 @@ if (is_main(import.meta)) {
       console.error(`daemon already running on ${SOCK}`);
       process.exit(0);
     }
-    fs.writeFileSync(LOG, '');
-    fs.writeFileSync(PID, String(process.pid));
+    _write_nofollow(LOG, '');
+    _write_nofollow(PID, String(process.pid));
     const cleanup = async () => {
       await stop_remote();
       try { fs.unlinkSync(PID); } catch {}

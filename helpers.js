@@ -311,8 +311,30 @@ async function upload_file(selector, p) {
   await cdp('DOM.setFileInputFiles', { files, nodeId });
 }
 
+// Block cloud-metadata endpoints by default. Hostname-only check -- DNS
+// rebinding is out of scope, but the common SSRF targets (IMDS, GCP metadata)
+// are blocked. Users override via BU_HTTP_GET_DENY (comma-separated, case-
+// insensitive); set to empty string to disable.
+const HTTP_DENY = (process.env.BU_HTTP_GET_DENY === undefined
+  ? '169.254.169.254,metadata.google.internal,metadata'
+  : process.env.BU_HTTP_GET_DENY
+).split(',').map((s) => s.trim().toLowerCase()).filter(Boolean);
+
+function _check_http_host(url) {
+  let u;
+  try { u = new URL(url); } catch { return; }
+  const host = u.hostname.replace(/^\[|\]$/g, '').toLowerCase();
+  if (HTTP_DENY.includes(host)) {
+    throw new Error(`http_get: host "${host}" blocked -- override via BU_HTTP_GET_DENY`);
+  }
+  if (/^169\.254\./.test(host)) {
+    throw new Error(`http_get: IPv4 link-local host "${host}" blocked -- override via BU_HTTP_GET_DENY`);
+  }
+}
+
 // Pure HTTP -- no browser. Use for static pages / APIs.
 async function http_get(url, headers = null, timeout = 20.0) {
+  _check_http_host(url);
   const h = { 'User-Agent': 'Mozilla/5.0', 'Accept-Encoding': 'gzip' };
   if (headers) Object.assign(h, headers);
   const r = await fetch(url, { headers: h, signal: AbortSignal.timeout(timeout * 1000) });
