@@ -47,6 +47,7 @@ Useful for sub-agents or deployment. **Free tier: 3 concurrent browsers, no card
 
 - `install.md` — first-time install and browser bootstrap
 - `SKILL.md` — day-to-day usage
+- [`ARCHITECTURE.md`](ARCHITECTURE.md) — components, data flow, and security gates (mermaid diagrams)
 - `run.js` (~55 lines) — evaluates plain JS from stdin with helpers preloaded as globals
 - `helpers.js` (~284 lines) — starting tool calls; the agent edits these
 - `admin.js` + `daemon.js` (~576 lines) — daemon bootstrap plus the CDP websocket and socket bridge
