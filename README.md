@@ -32,7 +32,7 @@ Read `js/install.md` first to install and connect this repo to my real browser. 
 
 When this page appears, tick the checkbox so the agent can connect to your browser:
 
-<img src="../docs/setup-remote-debugging.png" alt="Remote debugging setup" width="520" style="border-radius: 12px;" />
+<img src="docs/setup-remote-debugging.png" alt="Remote debugging setup" width="520" style="border-radius: 12px;" />
 
 Example task: `Star this repository` · see [domain-skills/](domain-skills/) for more
 
